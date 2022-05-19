@@ -22,8 +22,12 @@ struct context {
 struct cpu {
   struct proc *proc;          // The process running on this cpu, or null.
   struct context context;     // swtch() here to enter scheduler().
+  struct spinlock head_lock;
   int noff;                   // Depth of push_off() nesting.
   int intena;                 // Were interrupts enabled before push_off()?
+
+  int first_runnable_proc;
+  volatile uint64 processes_counter;
 };
 
 extern struct cpu cpus[NCPU];
@@ -85,6 +89,7 @@ enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 // Per-process state
 struct proc {
   struct spinlock lock;
+  struct spinlock item_lock;
 
   // p->lock must be held when using these:
   enum procstate state;        // Process state
@@ -92,6 +97,9 @@ struct proc {
   int killed;                  // If non-zero, have been killed
   int xstate;                  // Exit status to be returned to parent's wait
   int pid;                     // Process ID
+  volatile int num_of_cpu;
+  volatile int next_proc;
+  int index;
 
   // wait_lock must be held when using this:
   struct proc *parent;         // Parent process

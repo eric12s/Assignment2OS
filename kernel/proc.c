@@ -12,7 +12,7 @@ struct proc proc[NPROC];
 
 struct proc *initproc;
 
-int nextpid = 1;
+volatile int nextpid = 1;
 struct spinlock pid_lock;
 
 extern void forkret(void);
@@ -25,6 +25,22 @@ extern char trampoline[]; // trampoline.S
 // memory model when using p->parent.
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
+extern uint64 cas(volatile void *addr, int expected, int newval);
+
+
+#ifdef OFF
+int balance_mode = 0;
+#else
+int balance_mode = 1;
+#endif
+
+int cpus_counter = 0;
+int first_unused_proc = -1;
+int first_sleeping_proc = -1;
+int first_zombie_proc = -1;
+struct spinlock unused_lock;
+struct spinlock sleeping_lock;
+struct spinlock zombie_lock;
 
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
@@ -47,12 +63,29 @@ void
 procinit(void)
 {
   struct proc *p;
-  
+  initlock(&zombie_lock, "zombie");
+  initlock(&unused_lock, "unused");
+  initlock(&sleeping_lock, "sleeping");
+
   initlock(&pid_lock, "nextpid");
   initlock(&wait_lock, "wait_lock");
+  int index = -1;
+
   for(p = proc; p < &proc[NPROC]; p++) {
+      index++;
+      p->index = index;
       initlock(&p->lock, "proc");
+      initlock(&p->item_lock, "node");
+      p->next_proc = -1;
       p->kstack = KSTACK((int) (p - proc));
+      push_link(&first_unused_proc, p, &unused_lock);
+  }
+
+  struct cpu *cpusTmp;
+  for(cpusTmp = cpus; cpusTmp < &cpus[NCPU]; cpusTmp++) {
+    cpusTmp->first_runnable_proc = -1;
+    cpusTmp->processes_counter = 0;
+    initlock(&cpusTmp->head_lock, "runnable head lock");
   }
 }
 
@@ -85,15 +118,11 @@ myproc(void) {
   return p;
 }
 
-int
-allocpid() {
+int allocpid() {
   int pid;
-  
-  acquire(&pid_lock);
-  pid = nextpid;
-  nextpid = nextpid + 1;
-  release(&pid_lock);
-
+  do {
+      pid = nextpid;
+  } while (cas(&nextpid, pid, pid + 1));
   return pid;
 }
 
@@ -105,22 +134,19 @@ static struct proc*
 allocproc(void)
 {
   struct proc *p;
-
-  for(p = proc; p < &proc[NPROC]; p++) {
+  int first_link = pop_link(&first_unused_proc, &unused_lock);
+  if (first_link != -1) {
+    p = &proc[first_link];
     acquire(&p->lock);
-    if(p->state == UNUSED) {
-      goto found;
-    } else {
-      release(&p->lock);
-    }
+    goto found;
   }
+  printf("WTF");
   return 0;
 
 found:
   p->pid = allocpid();
   p->state = USED;
 
-  // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
     release(&p->lock);
@@ -163,7 +189,12 @@ freeproc(struct proc *p)
   p->chan = 0;
   p->killed = 0;
   p->xstate = 0;
-  p->state = UNUSED;
+  int res = delete_link(&first_zombie_proc, p, &zombie_lock);
+
+  if (res != -1) {
+    p->state = UNUSED;
+    push_link(&first_unused_proc, p, &unused_lock);
+  }
 }
 
 // Create a user page table for a given process,
@@ -243,7 +274,7 @@ userinit(void)
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
-
+  push_link(&cpus[0].first_runnable_proc, p, &cpus[0].head_lock);
   release(&p->lock);
 }
 
@@ -278,6 +309,7 @@ fork(void)
 
   // Allocate process.
   if((np = allocproc()) == 0){
+    printf("SAMAK");
     return -1;
   }
 
@@ -309,10 +341,22 @@ fork(void)
 
   acquire(&wait_lock);
   np->parent = p;
+
+  if (balance_mode) {
+    int chosen_cpu = choose_cpu();
+    np->num_of_cpu = chosen_cpu;
+
+    if (chosen_cpu != p->num_of_cpu)
+        while(cas(&cpus[chosen_cpu].processes_counter, cpus[chosen_cpu].processes_counter, cpus[chosen_cpu].processes_counter + 1) != 0);
+  } else {
+    np->num_of_cpu = p->num_of_cpu;
+  }
+    
   release(&wait_lock);
 
   acquire(&np->lock);
   np->state = RUNNABLE;
+  push_link(&cpus[np->num_of_cpu].first_runnable_proc, np, &cpus[np->num_of_cpu].head_lock);
   release(&np->lock);
 
   return pid;
@@ -370,6 +414,7 @@ exit(int status)
 
   p->xstate = status;
   p->state = ZOMBIE;
+  push_link(&first_zombie_proc, p, &zombie_lock);
 
   release(&wait_lock);
 
@@ -439,26 +484,21 @@ scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
-  
   c->proc = 0;
   for(;;){
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
+    // printf("!!!");
+    int first_proc_id = pop_link(&c->first_runnable_proc, &c->head_lock);
+    if (first_proc_id != -1) {
+      p = &proc[first_proc_id];
 
-    for(p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
+      acquire(&p->lock);  
+      p->state = RUNNING;
+      c->proc = p;
+      swtch(&c->context, &p->context);
 
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-      }
+      c->proc = 0;
       release(&p->lock);
     }
   }
@@ -497,7 +537,9 @@ yield(void)
 {
   struct proc *p = myproc();
   acquire(&p->lock);
+  volatile int num_of_cpu = p->num_of_cpu;
   p->state = RUNNABLE;
+  push_link(&cpus[num_of_cpu].first_runnable_proc, p, &cpus[num_of_cpu].head_lock);
   sched();
   release(&p->lock);
 }
@@ -538,8 +580,8 @@ sleep(void *chan, struct spinlock *lk)
   // so it's okay to release lk.
 
   acquire(&p->lock);  //DOC: sleeplock1
+  push_link(&first_sleeping_proc, p, &sleeping_lock);
   release(lk);
-
   // Go to sleep.
   p->chan = chan;
   p->state = SLEEPING;
@@ -559,17 +601,60 @@ sleep(void *chan, struct spinlock *lk)
 void
 wakeup(void *chan)
 {
-  struct proc *p;
+  acquire(&sleeping_lock);
 
-  for(p = proc; p < &proc[NPROC]; p++) {
-    if(p != myproc()){
-      acquire(&p->lock);
-      if(p->state == SLEEPING && p->chan == chan) {
-        p->state = RUNNABLE;
-      }
-      release(&p->lock);
-    }
+  if (first_sleeping_proc < 0) {
+    release(&sleeping_lock);
+    return;
   }
+
+  struct proc *p = &proc[first_sleeping_proc];
+  acquire(&p->lock);
+  release(&sleeping_lock);
+
+  volatile int next_proc = p->next_proc;
+
+  struct cpu *c;
+  if (p->state == SLEEPING && p->chan == chan) {
+      if(delete_link(&first_sleeping_proc, p, &sleeping_lock)){
+          p->state = RUNNABLE;
+          p->num_of_cpu = p->num_of_cpu;
+
+          if (balance_mode) {
+              int chosen_cpu = choose_cpu();
+              p->num_of_cpu = chosen_cpu;
+              if (chosen_cpu != p->num_of_cpu)
+                while(cas(&cpus[chosen_cpu].processes_counter, cpus[chosen_cpu].processes_counter, cpus[chosen_cpu].processes_counter + 1) != 0);
+          }
+
+          c = &cpus[p->num_of_cpu];
+          push_link(&c->first_runnable_proc, p, &c->head_lock);
+      }
+  }
+  release(&p->lock);
+  while (next_proc > 0) {
+    p = &proc[next_proc];
+    acquire(&p->lock);
+    next_proc = p->next_proc;
+
+    if (p->state == SLEEPING && p->chan == chan) {
+        if(delete_link(&first_sleeping_proc, p, &sleeping_lock)){
+            p->state = RUNNABLE;
+            p->num_of_cpu = p->num_of_cpu;
+
+            if (balance_mode) {
+                int chosen_cpu = choose_cpu();
+                p->num_of_cpu = chosen_cpu;
+                if (chosen_cpu != p->num_of_cpu)
+                  while(cas(&cpus[chosen_cpu].processes_counter, cpus[chosen_cpu].processes_counter, cpus[chosen_cpu].processes_counter + 1) != 0);
+            }
+
+            c = &cpus[p->num_of_cpu];
+            push_link(&c->first_runnable_proc, p, &c->head_lock);
+        }
+    }
+    release(&p->lock);  
+  } 
 }
 
 // Kill the process with the given pid.
@@ -579,14 +664,17 @@ int
 kill(int pid)
 {
   struct proc *p;
-
   for(p = proc; p < &proc[NPROC]; p++){
     acquire(&p->lock);
     if(p->pid == pid){
       p->killed = 1;
       if(p->state == SLEEPING){
+        int res = delete_link(&first_sleeping_proc, p, &sleeping_lock);
         // Wake process from sleep().
-        p->state = RUNNABLE;
+        if (res > 0) {
+          p->state = RUNNABLE;
+          push_link(&cpus[p->num_of_cpu].first_runnable_proc, p, &cpus[p->num_of_cpu].head_lock);
+        }
       }
       release(&p->lock);
       return 0;
@@ -653,4 +741,179 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+int get_cpu() {
+    int num_of_cpu = -99;
+    struct proc *proc = myproc();
+    acquire(&proc->lock);
+    num_of_cpu = proc->num_of_cpu;
+    release(&proc->lock);
+    return num_of_cpu;
+}
+
+int set_cpu(int num_of_cpu) {
+    struct proc* proc = myproc();
+    if(cas(&proc->num_of_cpu, proc->num_of_cpu, num_of_cpu) == 0) {
+      yield();
+      return num_of_cpu;
+    }
+    return -99;
+}
+
+void push_link(int* first_id, struct proc* to_add, struct spinlock* lock) {
+    // acquire(lock);
+    // if (*first_id != -1){
+    //     struct proc *prev_proc;
+    //     struct proc *curr_proc = &to_add[*first_id];
+    //     acquire(&curr_proc->item_lock);
+    //     release(lock);
+    //     while (curr_proc->next_proc != -1){
+    //         prev_proc = curr_proc;
+    //         curr_proc = &to_add[curr_proc->next_proc];
+    //         acquire(&curr_proc->item_lock);
+    //         release(&prev_proc->item_lock);
+    //     }
+    //     curr_proc->next_proc = to_add->index;
+    //     to_add->next_proc = -1;
+    //     release(&curr_proc->item_lock);
+    // } else {
+    //     *first_id = to_add->index;
+    //     to_add->next_proc = -1;
+    //     release(lock);
+    //     return;
+    // }
+
+    struct proc *curr_proc;
+    struct proc *prev_proc;
+    acquire(lock);
+    if (*first_id == -1){
+        *first_id = proc->index;
+        proc->next_proc = -1;
+        release(lock);
+        return;
+    }
+    curr_proc = &proc[*first_id];
+    acquire(&curr_proc->item_lock);
+    release(lock);
+    
+    while (curr_proc->next_proc != -1){
+        prev_proc = curr_proc;
+        curr_proc = &proc[curr_proc->next_proc];
+        acquire(&curr_proc->item_lock);
+        release(&prev_proc->item_lock);
+    }
+    curr_proc->next_proc = proc->index;
+    proc->next_proc = -1;
+    release(&curr_proc->item_lock);
+}
+
+int delete_link(int* first_id, struct proc* to_remove, struct spinlock* lock) {
+    // struct proc *prev_proc;
+    // acquire(lock);
+    // if(*first_id != -1){
+    //     struct proc *curr_proc = &proc[*first_id];
+    //     acquire(&curr_proc->item_lock);
+    //     if (curr_proc->index != to_remove->index){
+    //         release(lock);
+    //         while (curr_proc->next_proc != to_remove->index) {
+    //             if (curr_proc->next_proc  != -1){
+    //                 prev_proc = curr_proc;
+    //                 curr_proc = &proc[prev_proc->next_proc];
+    //                 acquire(&curr_proc->item_lock);
+    //                 release(&prev_proc->item_lock);
+    //             }
+    //             else{
+    //                 release(&curr_proc->item_lock);
+    //                 return -1;
+    //             }
+    //         }
+    //         acquire(&to_remove->item_lock);
+    //         curr_proc->next_proc = to_remove->next_proc;
+    //         to_remove->next_proc = -1;
+    //         release(&to_remove->item_lock);
+    //         release(&curr_proc->item_lock);
+    //         return 1;
+    //     } else {
+    //         *first_id = to_remove->next_proc;
+    //         to_remove->next_proc = -1;
+    //         release(&curr_proc->item_lock);
+    //         release(lock);
+    //         return 1;
+    //     }
+    // } else {
+    //     release(lock);
+    //     return -1;
+    // }
+
+    struct proc *curr_proc;
+    struct proc *prev_proc;
+    acquire(lock);
+    if (*first_id == -1){
+        release(lock);
+        return -1;
+    }
+
+    curr_proc = &proc[*first_id];
+    acquire(&curr_proc->item_lock);
+    if (curr_proc->index == proc->index){
+        *first_id = proc->next_proc;
+        proc->next_proc = -1;
+        release(&curr_proc->item_lock);
+        release(lock);
+        return 1;
+    }
+
+    release(lock);
+    while (curr_proc->next_proc != proc->index){
+        if (curr_proc->next_proc  == -1){
+            release(&curr_proc->item_lock);
+            return -1;
+        }
+        prev_proc = curr_proc;
+        curr_proc = &proc[prev_proc->next_proc];
+        acquire(&curr_proc->item_lock);
+        release(&prev_proc->item_lock);
+    }
+    acquire(&proc->item_lock);
+    curr_proc->next_proc = proc->next_proc;
+    proc->next_proc = -1;
+    release(&proc->item_lock);
+    release(&curr_proc->item_lock);
+    return 1;
+}
+
+int pop_link(int* first_proc, struct spinlock* lock) {
+    acquire(lock);
+    if (*first_proc == -1) {
+        release(lock);
+        return -1;
+    } else {
+      struct proc *p = &proc[*first_proc];
+      acquire(&p->item_lock);
+      *first_proc = p->next_proc;
+      p->next_proc = -1;
+      int index = p->index;
+      release(&p->item_lock);
+      release(lock);
+      return index;
+    }
+}
+
+int choose_cpu() {
+    int cpu = 0;
+    int min = cpus[0].processes_counter;
+    int i;
+    for (i = 1; i < cpus_counter; i++){
+        if (min > cpus[i].processes_counter){
+            min = cpus[i].processes_counter;
+            cpu = i;
+        }
+    }
+    return cpu;
+}
+
+int cpu_process_count(int num){
+  struct cpu* cpu = &cpus[num];
+    return cpu->processes_counter;
 }
