@@ -140,7 +140,6 @@ allocproc(void)
     acquire(&p->lock);
     goto found;
   }
-  printf("WTF");
   return 0;
 
 found:
@@ -309,7 +308,6 @@ fork(void)
 
   // Allocate process.
   if((np = allocproc()) == 0){
-    printf("SAMAK");
     return -1;
   }
 
@@ -761,66 +759,70 @@ int set_cpu(int num_of_cpu) {
     return -99;
 }
 
-void push_link(int* first_proc_id, struct proc* new_proc, struct spinlock* first_lock) {
-    struct proc *curr_proc;
-    struct proc *prev_proc;
-    acquire(first_lock);
-    if (*first_proc_id == -1){
-        *first_proc_id = new_proc->index;
-        new_proc->next_proc = -1;
-        release(first_lock);
-        return;
-    }
-    curr_proc = &proc[*first_proc_id];
-    acquire(&curr_proc->item_lock);
-    release(first_lock);
-    while (curr_proc->next_proc != -1){
-        prev_proc = curr_proc;
-        curr_proc = &proc[curr_proc->next_proc];
+int push_link(int* first_proc, struct proc* to_push, struct spinlock* lock) {
+    acquire(lock);
+    if (*first_proc >= 0) {
+        struct proc *prev_proc;
+        struct proc *curr_proc = &proc[*first_proc];
         acquire(&curr_proc->item_lock);
-        release(&prev_proc->item_lock);
+        release(lock);
+        while (curr_proc->next_proc >= 0) {
+            prev_proc = curr_proc;
+            curr_proc = &proc[curr_proc->next_proc];
+            acquire(&curr_proc->item_lock);
+            release(&prev_proc->item_lock);
+        }
+        curr_proc->next_proc = to_push->index;
+        to_push->next_proc = -1;
+        release(&curr_proc->item_lock);
+    } else {
+        *first_proc = to_push->index;
+        to_push->next_proc = -1;
+        release(lock);
     }
-    curr_proc->next_proc = new_proc->index;
-    new_proc->next_proc = -1;
-    release(&curr_proc->item_lock);
+    return to_push->index;
 }
 
-int delete_link(int* first_proc_id, struct proc* remove_proc, struct spinlock* first_lock) {
+int delete_link(int* first_proc, struct proc* to_remove, struct spinlock* lock) {
     struct proc *curr_proc;
     struct proc *prev_proc;
-    acquire(first_lock);
-    if (*first_proc_id == -1){
-        release(first_lock);
-        return -1;
-    }
-
-    curr_proc = &proc[*first_proc_id];
-    acquire(&curr_proc->item_lock);
-    if (curr_proc->index == remove_proc->index){
-        *first_proc_id = remove_proc->next_proc;
-        remove_proc->next_proc = -1;
-        release(&curr_proc->item_lock);
-        release(first_lock);
-        return 1;
-    }
-
-    release(first_lock);
-    while (curr_proc->next_proc != remove_proc->index){
-        if (curr_proc->next_proc  == -1){
-            release(&curr_proc->item_lock);
-            return -1;
-        }
-        prev_proc = curr_proc;
-        curr_proc = &proc[prev_proc->next_proc];
+    acquire(lock);
+    int returned_index = -1;
+    if(*first_proc >= 0) {
+        curr_proc = &proc[*first_proc];
         acquire(&curr_proc->item_lock);
-        release(&prev_proc->item_lock);
+        if (curr_proc->index != to_remove->index) {
+            release(lock);
+            while (curr_proc->next_proc != to_remove->index) {
+                if (curr_proc->next_proc >= 0) {
+                    returned_index = to_remove->next_proc;
+                    prev_proc = curr_proc;
+                    curr_proc = &proc[prev_proc->next_proc];
+                    release(&prev_proc->item_lock);
+                    acquire(&curr_proc->item_lock);
+                }
+            }
+            if (returned_index == -1) {
+              release(&curr_proc->item_lock);
+              return returned_index;
+            }
+            acquire(&to_remove->item_lock);
+            curr_proc->next_proc = to_remove->next_proc;
+            to_remove->next_proc = -1;
+            release(&to_remove->item_lock);
+            release(&curr_proc->item_lock);
+            return returned_index;
+        } else {
+            *first_proc = to_remove->next_proc;
+            to_remove->next_proc = -1;
+            release(&curr_proc->item_lock);
+            release(lock);
+            return returned_index;
+        }
+    } else {
+        release(lock);
+        return returned_index;
     }
-    acquire(&remove_proc->item_lock);
-    curr_proc->next_proc = remove_proc->next_proc;
-    remove_proc->next_proc = -1;
-    release(&remove_proc->item_lock);
-    release(&curr_proc->item_lock);
-    return 1;
 }
 
 int pop_link(int* first_proc, struct spinlock* lock) {
@@ -844,7 +846,7 @@ int choose_cpu() {
     int cpu = 0;
     int min = cpus[0].processes_counter;
     int i;
-    for (i = 1; i < cpus_counter; i++){
+    for (i = 1; i < NCPU; i++){
         if (min > cpus[i].processes_counter){
             min = cpus[i].processes_counter;
             cpu = i;
@@ -856,29 +858,4 @@ int choose_cpu() {
 int cpu_process_count(int num){
   struct cpu* cpu = &cpus[num];
     return cpu->processes_counter;
-}
-
-int update_cpu(int cpu_id, int is_fork){
-    int new_cpu = cpu_id;
-    if (balance_mode)
-        new_cpu = least_used_cpu();
-    if (is_fork || (new_cpu != cpu_id))
-        increase_num_process(&cpus[new_cpu]);
-    return new_cpu;
-}
-
-int least_used_cpu(){
-    int least_used = 0;
-    int amount_least = cpus[0].processes_counter;
-    for(int i = 1; i < cpus_counter; i++){
-        if (amount_least > cpus[i].processes_counter){
-            least_used = i;
-            amount_least = cpus[i].processes_counter;
-        }
-    }
-    return least_used;
-}
-
-void increase_num_process(struct cpu* c){
-    while(cas(&c->processes_counter, c->processes_counter, c->processes_counter + 1) != 0);
 }

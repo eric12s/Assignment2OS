@@ -11,27 +11,19 @@
 
 int
 main(int argc, char *argv[]) {
-        int pid = fork();
+    int pid = fork();
     if(pid != 0){
         printf("pid = %d\n",pid);
         exit(pid);
     }
-     pid = fork();
-    if(pid != 0){
-        printf("pid = %d\n",pid);
-        exit(pid);
-    }
-     pid = fork();
-    if(pid != 0){
-        printf("pid = %d\n",pid);
-        exit(pid);
+    int pid2 = fork();
+    if(pid2 != 0){
+        printf("pid2 = %d\n",pid2);
+        exit(pid2);
     }
 
-
-
-printf("cpu 0: %d\n", cpu_process_count(0));
-printf("cpu 1: %d\n", cpu_process_count(1));
-printf("cpu 2: %d\n", cpu_process_count(2));
+    printf("first cpu: %d\n", cpu_process_count(0));
+    printf("second cpu: %d\n", cpu_process_count(1));
 
     exit(0);
 }
