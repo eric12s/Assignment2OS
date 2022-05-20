@@ -107,8 +107,8 @@ void            procdump(void);
 
 int             get_cpu();
 int             set_cpu(int num_of_cpu);
-int             push_link(int*, struct proc*, struct spinlock*);
-int             delete_link(int*, struct proc*, struct spinlock*);
+int             push_link(struct proc*, int*, struct spinlock*);
+int             delete_link(struct proc*, int*, struct spinlock*);
 int             pop_link(int*, struct spinlock*);
 int             choose_cpu();
 int             cpu_process_count(int cpu_num);

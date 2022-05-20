@@ -78,7 +78,7 @@ procinit(void)
       initlock(&p->item_lock, "node");
       p->next_proc = -1;
       p->kstack = KSTACK((int) (p - proc));
-      push_link(&first_unused_proc, p, &unused_lock);
+      push_link(p, &first_unused_proc, &unused_lock);
   }
 
   struct cpu *cpusTmp;
@@ -188,11 +188,11 @@ freeproc(struct proc *p)
   p->chan = 0;
   p->killed = 0;
   p->xstate = 0;
-  int res = delete_link(&first_zombie_proc, p, &zombie_lock);
+  int res = delete_link(p, &first_zombie_proc, &zombie_lock);
 
   if (res != -1) {
     p->state = UNUSED;
-    push_link(&first_unused_proc, p, &unused_lock);
+    push_link(p, &first_unused_proc, &unused_lock);
   }
 }
 
@@ -273,7 +273,7 @@ userinit(void)
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
-  push_link(&cpus[0].first_runnable_proc, p, &cpus[0].head_lock);
+  push_link(p, &cpus[0].first_runnable_proc, &cpus[0].head_lock);
   release(&p->lock);
 }
 
@@ -354,7 +354,7 @@ fork(void)
 
   acquire(&np->lock);
   np->state = RUNNABLE;
-  push_link(&cpus[np->num_of_cpu].first_runnable_proc, np, &cpus[np->num_of_cpu].head_lock);
+  push_link(np, &cpus[np->num_of_cpu].first_runnable_proc, &cpus[np->num_of_cpu].head_lock);
   release(&np->lock);
 
   return pid;
@@ -412,7 +412,7 @@ exit(int status)
 
   p->xstate = status;
   p->state = ZOMBIE;
-  push_link(&first_zombie_proc, p, &zombie_lock);
+  push_link(p, &first_zombie_proc, &zombie_lock);
 
   release(&wait_lock);
 
@@ -537,7 +537,7 @@ yield(void)
   acquire(&p->lock);
   volatile int num_of_cpu = p->num_of_cpu;
   p->state = RUNNABLE;
-  push_link(&cpus[num_of_cpu].first_runnable_proc, p, &cpus[num_of_cpu].head_lock);
+  push_link(p, &cpus[num_of_cpu].first_runnable_proc, &cpus[num_of_cpu].head_lock);
   sched();
   release(&p->lock);
 }
@@ -578,7 +578,7 @@ sleep(void *chan, struct spinlock *lk)
   // so it's okay to release lk.
 
   acquire(&p->lock);  //DOC: sleeplock1
-  push_link(&first_sleeping_proc, p, &sleeping_lock);
+  push_link(p, &first_sleeping_proc, &sleeping_lock);
   release(lk);
   // Go to sleep.
   p->chan = chan;
@@ -614,7 +614,7 @@ wakeup(void *chan)
 
   struct cpu *c;
   if (p->state == SLEEPING && p->chan == chan) {
-      if(delete_link(&first_sleeping_proc, p, &sleeping_lock)){
+      if(delete_link(p, &first_sleeping_proc, &sleeping_lock)){
           p->state = RUNNABLE;
           p->num_of_cpu = p->num_of_cpu;
 
@@ -626,7 +626,7 @@ wakeup(void *chan)
           }
 
           c = &cpus[p->num_of_cpu];
-          push_link(&c->first_runnable_proc, p, &c->head_lock);
+          push_link(p, &c->first_runnable_proc, &c->head_lock);
       }
   }
   release(&p->lock);
@@ -636,7 +636,7 @@ wakeup(void *chan)
     next_proc = p->next_proc;
 
     if (p->state == SLEEPING && p->chan == chan) {
-        if(delete_link(&first_sleeping_proc, p, &sleeping_lock)){
+        if(delete_link(p, &first_sleeping_proc, &sleeping_lock)){
             p->state = RUNNABLE;
             p->num_of_cpu = p->num_of_cpu;
 
@@ -648,7 +648,7 @@ wakeup(void *chan)
             }
 
             c = &cpus[p->num_of_cpu];
-            push_link(&c->first_runnable_proc, p, &c->head_lock);
+            push_link(p, &c->first_runnable_proc, &c->head_lock);
         }
     }
     release(&p->lock);  
@@ -667,11 +667,11 @@ kill(int pid)
     if(p->pid == pid){
       p->killed = 1;
       if(p->state == SLEEPING){
-        int res = delete_link(&first_sleeping_proc, p, &sleeping_lock);
+        int res = delete_link(p, &first_sleeping_proc, &sleeping_lock);
         // Wake process from sleep().
         if (res > 0) {
           p->state = RUNNABLE;
-          push_link(&cpus[p->num_of_cpu].first_runnable_proc, p, &cpus[p->num_of_cpu].head_lock);
+          push_link(p, &cpus[p->num_of_cpu].first_runnable_proc, &cpus[p->num_of_cpu].head_lock);
         }
       }
       release(&p->lock);
@@ -759,7 +759,7 @@ int set_cpu(int num_of_cpu) {
     return -99;
 }
 
-int push_link(int* first_proc, struct proc* to_push, struct spinlock* lock) {
+int push_link(struct proc* to_push, int* first_proc, struct spinlock* lock) {
     acquire(lock);
     if (*first_proc >= 0) {
         struct proc *prev_proc;
@@ -783,7 +783,7 @@ int push_link(int* first_proc, struct proc* to_push, struct spinlock* lock) {
     return to_push->index;
 }
 
-int delete_link(int* first_proc, struct proc* to_remove, struct spinlock* lock) {
+int delete_link(struct proc* to_remove, int* first_proc, struct spinlock* lock) {
     struct proc *curr_proc;
     struct proc *prev_proc;
     acquire(lock);
