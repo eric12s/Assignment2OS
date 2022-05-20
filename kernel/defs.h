@@ -111,6 +111,9 @@ void            push_link(int*, struct proc*, struct spinlock*);
 int             delete_link(int*, struct proc*, struct spinlock*);
 int             pop_link(int*, struct spinlock*);
 int             choose_cpu();
+void increase_num_process(struct cpu* c);
+int     least_used_cpu();
+int update_cpu(int cpu_id, int is_fork);
 int             cpu_process_count(int cpu_num);
 // swtch.S
 void            swtch(struct context*, struct context*);
