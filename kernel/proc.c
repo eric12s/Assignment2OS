@@ -488,7 +488,7 @@ scheduler(void)
     intr_on();
     // printf("!!!");
     int first_proc_id = pop_link(&c->first_runnable_proc, &c->head_lock);
-    if (first_proc_id != -1) {
+    if (first_proc_id >= 0) {
       p = &proc[first_proc_id];
 
       acquire(&p->lock);  
@@ -742,9 +742,9 @@ procdump(void)
 }
 
 int get_cpu() {
-    int num_of_cpu = -99;
     struct proc *proc = myproc();
     acquire(&proc->lock);
+    int num_of_cpu = -99;
     num_of_cpu = proc->num_of_cpu;
     release(&proc->lock);
     return num_of_cpu;
@@ -827,19 +827,18 @@ int delete_link(struct proc* to_remove, int* first_proc, struct spinlock* lock) 
 
 int pop_link(int* first_proc, struct spinlock* lock) {
     acquire(lock);
-    if (*first_proc == -1) {
-        release(lock);
-        return -1;
-    } else {
+    int res = -1;
+    if (*first_proc >= 0) {
       struct proc *p = &proc[*first_proc];
       acquire(&p->item_lock);
       *first_proc = p->next_proc;
       p->next_proc = -1;
       int index = p->index;
       release(&p->item_lock);
-      release(lock);
-      return index;
+      res = index;
     }
+    release(lock);
+    return res;
 }
 
 int choose_cpu() {
@@ -857,5 +856,5 @@ int choose_cpu() {
 
 int cpu_process_count(int num){
   struct cpu* cpu = &cpus[num];
-    return cpu->processes_counter;
+  return cpu->processes_counter;
 }
