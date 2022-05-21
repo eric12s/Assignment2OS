@@ -34,7 +34,6 @@ int balance_mode = 0;
 int balance_mode = 1;
 #endif
 
-int cpus_counter = 0;
 int first_unused_proc = -1;
 int first_sleeping_proc = -1;
 int first_zombie_proc = -1;
@@ -75,7 +74,7 @@ procinit(void)
       index++;
       p->index = index;
       initlock(&p->lock, "proc");
-      initlock(&p->item_lock, "node");
+      initlock(&p->item_lock, "item");
       p->next_proc = -1;
       p->kstack = KSTACK((int) (p - proc));
       push_link(p, &first_unused_proc, &unused_lock);

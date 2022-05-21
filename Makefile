@@ -61,10 +61,6 @@ ifndef BLNCFLG
 BLNCFLG := OFF
 endif
 
-ifndef CPUS
-CPUS := 3
-endif
-
 CFLAGS = -Wall -Werror -O -fno-omit-frame-pointer -ggdb
 CFLAGS += -MD
 CFLAGS += -mcmodel=medany
@@ -125,6 +121,10 @@ mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
 # details:
 # http://www.gnu.org/software/make/manual/html_node/Chained-Rules.html
 .PRECIOUS: %.o
+
+ifndef CPUS
+CPUS := 3
+endif
 
 UPROGS=\
 	$U/_cat\
